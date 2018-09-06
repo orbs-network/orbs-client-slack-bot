@@ -12,9 +12,10 @@ interface Config {
   timeout: number;
 }
 
-interface ED25519Key {
+interface Account {
   publicKey: string;
   privateKey: string;
+  username: string;
 }
 
 const {
@@ -40,61 +41,104 @@ interface MethodArgument {
 interface Contract {
   ProtocolVersion: Number;
   VirtualChainId: Number;
-  ContractName: Number;
+  ContractName: String;
 }
 
-interface ContractCall extends Contract {
+interface MethodCall extends Contract {
   MethodName: string;
   Arguments: MethodArgument[];
 }
 
-function generateAddress(): ED25519Key {
-  const output = shell.exec(`${ORBS_JSON_CLIENT_PATH} --generate-test-keys`).stdout.split("\n")
-
-  return { publicKey: output[0], privateKey: output[1] };
+interface SendTransaction extends Contract {
+  MethodName: string;
+  Arguments: MethodArgument[];
 }
 
-async function getAccount(username: string, config: Config): Promise<ED25519Key> {
-  const data = await loadAccount(username);
+function generateAddress(username: string): Account {
+  const output = shell.exec(`${ORBS_JSON_CLIENT_PATH} --generate-test-keys`).stdout.split("\n");
 
-  let keyPair:ED25519Key;
+  return { publicKey: output[0], privateKey: output[1], username };
+}
 
-  if (data) {
-    keyPair = { publicKey: data.publicKey, privateKey: data.privateKey};
-  } else {
-    keyPair = generateAddress();
-    await saveAccount(username, keyPair);
+async function getAccount(username: string): Promise<Account> {
+  let account = await loadAccount(username);
+
+  if (!account) {
+    account = generateAddress(username);
+    await saveAccount(account);
   }
 
-  return Promise.resolve(keyPair);
+  return Promise.resolve(account);
 }
 
-// async function matchInput(message: any, condition: RegExp, botUsername: string,
-//   callback: (clientAccount: FooBarAccount, botAccount: FooBarAccount, match: any) => void) {
-//     const matches = message.text.match(condition);
+async function matchInput(message: any, condition: RegExp, botUsername: string,
+  callback: (clientAccount: Account, botAccount: Account, match: any) => void) {
+    const matches = message.text.match(condition);
 
-//     if (matches) {
-//       const [clientAccount, botAccount] = await Promise.all([
-//         getAccount(message.user, config), getAccount(botUsername, config)
-//       ]);
+    if (matches) {
+      const [clientAccount, botAccount] = await Promise.all([
+        getAccount(message.user), getAccount(botUsername)
+      ]);
 
-//       callback(clientAccount, botAccount, matches);
-//     }
-// }
+      callback(clientAccount, botAccount, matches);
+    }
+}
 
-// function mention(client: FooBarAccount) {
-//   return `<@${client.username}> ${client.address}`;
-// }
+function mention(account: Account) {
+  return `<@${account.username}> ${account.publicKey}`;
+}
 
 const redisClient: any = redis.createClient(process.env.REDIS_URL);
 
-async function saveAccount(username: any, keyPair: any) {
-  return redisClient.hmsetAsync(username, { publicKey: keyPair.publicKey, privateKey: keyPair.privateKey });
+async function saveAccount(account: Account) {
+  return redisClient.hmsetAsync(account.username, account);
 }
 
 async function loadAccount(username: any) {
   return redisClient.hgetallAsync(username);
 }
+
+class Client {
+  config: Config;
+
+  constructor(config: Config) {
+    this.config = config;
+  }
+
+  async getMyBalance(account: Account) {
+    const callMethod: MethodCall = {
+      ProtocolVersion: 1,
+      VirtualChainId: VIRTUAL_CHAIN_ID,
+      ContractName: "BenchmarkToken",
+      MethodName: "getBalance",
+      Arguments: []
+    };
+
+    const output = shell.exec(`${ORBS_JSON_CLIENT_PATH} --call-method '${JSON.stringify(callMethod)}' --public-key ${account.publicKey}`).stdout.split("\n");
+  }
+
+  async transfer(from: Account, to: Account, amount: Number) {
+    const sendTransaction: SendTransaction = {
+      ProtocolVersion: 1,
+      VirtualChainId: VIRTUAL_CHAIN_ID,
+      ContractName: "BenchmarkToken",
+      MethodName: "transfer",
+      Arguments: [
+        {
+          Name: "amount",
+          Type: 1,
+          Uint64Value: amount,
+        }
+      ]
+    };
+
+    console.log(`${ORBS_JSON_CLIENT_PATH} --send-transaction '${JSON.stringify(sendTransaction)}' --public-key ${from.publicKey} --private-key ${from.privateKey}`);
+
+    const output = shell.exec(`${ORBS_JSON_CLIENT_PATH} --send-transaction '${JSON.stringify(sendTransaction)}' --public-key ${from.publicKey} --private-key ${from.privateKey}`).stdout.split("\n");
+  }
+}
+
+const orbsClient = new Client(config);
 
 const rtm = new RTMClient(SLACK_TOKEN, { autoReconnect: true, useRtmConnect: true });
 rtm.start({});
@@ -115,58 +159,57 @@ rtm.on("message", async (message) => {
 
   // Log the message
   console.log(`(channel:${message.channel}) ${message.user} says: ${message.text}`);
-  getAccount(message.user, config).then(console.log);
+  getAccount(message.user).then(console.log);
+
+  try {
+    matchInput(message, /^get my address$/i, BOT_USER_ID, async (client, bot, match) => {
+      rtm.sendMessage(mention(client), message.channel);
+    });
+
+    matchInput(message, /^get my balance$/i, BOT_USER_ID, async (client, bot, match) => {
+      const clientBalance = await orbsClient.getMyBalance(client);
+      rtm.sendMessage(`${mention(client)} has ${clientBalance} magic internet money`, message.channel);
+    });
+
+  //   matchInput(message, /^get bot balance$/i, BOT_USER_ID, async (client, bot, match) => {
+  //     const botBalance = await bot.getMyBalance();
+  //     rtm.sendMessage(`${mention(bot)} now has ${botBalance} magic internet money`, message.channel);
+  //   });
+
+  //   matchInput(message, /^good bot gets (\d+)$/i, BOT_USER_ID, async (client, bot, match) => {
+  //     const amount = Number(match[1]);
+  //     rtm.sendMessage(`Set ${mention(bot)} balance to ${amount} magic internet money`, message.channel);
+
+  //     await bot.initBalance(bot.address, amount);
+
+  //     const balance = await bot.getMyBalance();
+  //     rtm.sendMessage(`${mention(bot)} now has ${balance} magic internet money`, message.channel);
+  //   });
+
+    matchInput(message, /I opened a pull request/i, BOT_USER_ID, async (client, bot, match) => {
+      rtm.sendMessage(`Transfering ${PULL_REQUEST_AWARD} to ${mention(client)}`, message.channel);
+      await orbsClient.transfer(bot, client, PULL_REQUEST_AWARD);
+
+      const [ clientBalance, botBalance ] = await Promise.all([orbsClient.getMyBalance(client), orbsClient.getMyBalance(bot)]);
+      rtm.sendMessage(`${mention(client)} has ${clientBalance} magic internet money`, message.channel);
+      rtm.sendMessage(`${mention(bot)} now has ${botBalance} magic internet money`, message.channel);
+    });
+
+  //   matchInput(message, /[transfer|send] (\d+) to <@(\w+)>/, BOT_USER_ID, async (client, bot, match) => {
+  //     const amount = Number(match[1]);
+  //     const to = match[2];
+
+  //     const receiver = await getAccount(to, config);
+  //     rtm.sendMessage(`Transfering ${amount} from ${mention(client)} to ${mention(receiver)}`, message.channel);
+
+  //     await client.transfer(receiver.address, amount);
+
+  //     const [ clientBalance, receiverBalance ] = await Promise.all([client.getMyBalance(), receiver.getMyBalance()]);
+  //     rtm.sendMessage(`${mention(client)} now has ${clientBalance} magic internet money`, message.channel);
+  //     rtm.sendMessage(`${mention(receiver)} now has ${receiverBalance} magic internet money`, message.channel);
+  //   });
+  } catch (e) {
+    console.log(`Error occurred: ${e}`);
+  }
+
 });
-//   try {
-//     matchInput(message, /^get my address$/i, BOT_USER_ID, async (client, bot, match) => {
-//       const clientBalance = await client.getMyBalance();
-//       rtm.sendMessage(mention(client), message.channel);
-//     });
-
-//     matchInput(message, /^get my balance$/i, BOT_USER_ID, async (client, bot, match) => {
-//       const clientBalance = await client.getMyBalance();
-//       rtm.sendMessage(`${mention(client)} has ${clientBalance} magic internet money`, message.channel);
-//     });
-
-//     matchInput(message, /^get bot balance$/i, BOT_USER_ID, async (client, bot, match) => {
-//       const botBalance = await bot.getMyBalance();
-//       rtm.sendMessage(`${mention(bot)} now has ${botBalance} magic internet money`, message.channel);
-//     });
-
-//     matchInput(message, /^good bot gets (\d+)$/i, BOT_USER_ID, async (client, bot, match) => {
-//       const amount = Number(match[1]);
-//       rtm.sendMessage(`Set ${mention(bot)} balance to ${amount} magic internet money`, message.channel);
-
-//       await bot.initBalance(bot.address, amount);
-
-//       const balance = await bot.getMyBalance();
-//       rtm.sendMessage(`${mention(bot)} now has ${balance} magic internet money`, message.channel);
-//     });
-
-//     matchInput(message, /I opened a pull request/i, BOT_USER_ID, async (client, bot, match) => {
-//       rtm.sendMessage(`Transfering ${PULL_REQUEST_AWARD} to ${mention(client)}`, message.channel);
-//       await bot.transfer(client.address, PULL_REQUEST_AWARD);
-
-//       const [ clientBalance, botBalance ] = await Promise.all([client.getMyBalance(), bot.getMyBalance()]);
-//       rtm.sendMessage(`${mention(client)} has ${clientBalance} magic internet money`, message.channel);
-//       rtm.sendMessage(`${mention(bot)} now has ${botBalance} magic internet money`, message.channel);
-//     });
-
-//     matchInput(message, /[transfer|send] (\d+) to <@(\w+)>/, BOT_USER_ID, async (client, bot, match) => {
-//       const amount = Number(match[1]);
-//       const to = match[2];
-
-//       const receiver = await getAccount(to, config);
-//       rtm.sendMessage(`Transfering ${amount} from ${mention(client)} to ${mention(receiver)}`, message.channel);
-
-//       await client.transfer(receiver.address, amount);
-
-//       const [ clientBalance, receiverBalance ] = await Promise.all([client.getMyBalance(), receiver.getMyBalance()]);
-//       rtm.sendMessage(`${mention(client)} now has ${clientBalance} magic internet money`, message.channel);
-//       rtm.sendMessage(`${mention(receiver)} now has ${receiverBalance} magic internet money`, message.channel);
-//     });
-//   } catch (e) {
-//     console.log(`Error occurred: ${e}`);
-//   }
-
-// });
