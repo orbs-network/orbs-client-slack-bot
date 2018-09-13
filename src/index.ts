@@ -54,6 +54,19 @@ interface SendTransaction extends Contract {
   Arguments: MethodArgument[];
 }
 
+interface TxReceipt {
+  Txhash: string;
+  ExecutionResult: string;
+  OutputArguments: MethodArgument[];
+}
+
+interface SendTransactionResult {
+  TransactionReceipt: TxReceipt;
+  TransactionStatus: number;
+  BlockHeight: number;
+  BlockTimestamt: number;
+}
+
 function generateAddress(username: string): Account {
   const output = shell.exec(`${ORBS_JSON_CLIENT_PATH} --generate-test-keys`).stdout.split("\n");
 
@@ -88,6 +101,10 @@ function mention(account: Account) {
   return `<@${account.username}> ${account.publicKey}`;
 }
 
+function base64ToHex(b64input: string) {
+  return Buffer.from(b64input, "base64").toString("hex");
+}
+
 const redisClient: any = redis.createClient(process.env.REDIS_URL);
 
 async function saveAccount(account: Account) {
@@ -120,7 +137,7 @@ class Client {
     return balance;
   }
 
-  async transfer(from: Account, to: Account, amount: Number) {
+  async transfer(from: Account, to: Account, amount: Number): Promise<SendTransactionResult> {
     const sendTransaction: SendTransaction = {
       ProtocolVersion: 1,
       VirtualChainId: VIRTUAL_CHAIN_ID,
@@ -137,7 +154,10 @@ class Client {
 
     console.log(`${ORBS_JSON_CLIENT_PATH} --send-transaction '${JSON.stringify(sendTransaction)}' --public-key ${from.publicKey} --private-key ${from.privateKey}`);
 
-    const output = shell.exec(`${ORBS_JSON_CLIENT_PATH} --send-transaction '${JSON.stringify(sendTransaction)}' --public-key ${from.publicKey} --private-key ${from.privateKey}`).stdout.split("\n");
+    const output = shell.exec(`${ORBS_JSON_CLIENT_PATH} --send-transaction '${JSON.stringify(sendTransaction)}' --public-key ${from.publicKey} --private-key ${from.privateKey}`).stdout.split("\n")[0];
+
+    const result = JSON.parse(output);
+    return result;
   }
 }
 
@@ -191,7 +211,9 @@ rtm.on("message", async (message) => {
 
     matchInput(message, /I opened a pull request/i, BOT_USER_ID, async (client, bot, match) => {
       rtm.sendMessage(`Transfering ${PULL_REQUEST_AWARD} to ${mention(client)}`, message.channel);
-      await orbsClient.transfer(bot, client, PULL_REQUEST_AWARD);
+      const result = await orbsClient.transfer(bot, client, PULL_REQUEST_AWARD);
+
+      rtm.sendMessage(`Transaction ${base64ToHex(result.TransactionReceipt.Txhash)} committed to block ${result.BlockHeight}`, message.channel);
 
       const [ clientBalance, botBalance ] = await Promise.all([orbsClient.getMyBalance(client), orbsClient.getMyBalance(bot)]);
       rtm.sendMessage(`${mention(client)} has ${clientBalance} magic internet money`, message.channel);
