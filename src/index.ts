@@ -105,7 +105,7 @@ class Client {
     this.config = config;
   }
 
-  async getMyBalance(account: Account) {
+  async getMyBalance(account: Account): Promise<number> {
     const callMethod: MethodCall = {
       ProtocolVersion: 1,
       VirtualChainId: VIRTUAL_CHAIN_ID,
@@ -114,7 +114,10 @@ class Client {
       Arguments: []
     };
 
-    const output = shell.exec(`${ORBS_JSON_CLIENT_PATH} --call-method '${JSON.stringify(callMethod)}' --public-key ${account.publicKey}`).stdout.split("\n");
+    const output = shell.exec(`${ORBS_JSON_CLIENT_PATH} --call-method '${JSON.stringify(callMethod)}' --public-key ${account.publicKey}`).stdout.split("\n")[0];
+
+    const balance = Number(JSON.parse(output).OutputArguments[0].Uint64Value);
+    return balance;
   }
 
   async transfer(from: Account, to: Account, amount: Number) {
