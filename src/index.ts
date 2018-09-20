@@ -13,6 +13,7 @@ interface Config {
 }
 
 interface Account {
+  address: string;
   publicKey: string;
   privateKey: string;
   username: string;
@@ -36,7 +37,8 @@ const config = {
 interface MethodArgument {
   Name: string;
   Type: Number;
-  Uint64Value: Number;
+  Uint64Value?: Number;
+  BytesValue?: string;
 }
 interface Contract {
   ProtocolVersion: Number;
@@ -70,7 +72,7 @@ interface SendTransactionResult {
 function generateAddress(username: string): Account {
   const output = shell.exec(`${ORBS_JSON_CLIENT_PATH} --generate-test-keys`).stdout.split("\n");
 
-  return { publicKey: output[0], privateKey: output[1], username };
+  return { address: output[0], publicKey: output[1], privateKey: output[2], username };
 }
 
 async function getAccount(username: string): Promise<Account> {
@@ -128,7 +130,11 @@ class Client {
       VirtualChainId: VIRTUAL_CHAIN_ID,
       ContractName: "BenchmarkToken",
       MethodName: "getBalance",
-      Arguments: []
+      Arguments: [{
+        Name: "targetAddress",
+        Type: 3,
+        BytesValue: Buffer.from(account.address, "hex").toString("base64"),
+      }]
     };
 
     const output = shell.exec(`${ORBS_JSON_CLIENT_PATH} --call-method '${JSON.stringify(callMethod)}' --public-key ${account.publicKey}`).stdout.split("\n")[0];
@@ -148,6 +154,11 @@ class Client {
           Name: "amount",
           Type: 1,
           Uint64Value: amount,
+        },
+        {
+          Name: "targetAddress",
+          Type: 3,
+          BytesValue: Buffer.from(to.address, "hex").toString("base64"),
         }
       ]
     };
@@ -194,21 +205,6 @@ rtm.on("message", async (message) => {
       rtm.sendMessage(`${mention(client)} has ${clientBalance} magic internet money`, message.channel);
     });
 
-  //   matchInput(message, /^get bot balance$/i, BOT_USER_ID, async (client, bot, match) => {
-  //     const botBalance = await bot.getMyBalance();
-  //     rtm.sendMessage(`${mention(bot)} now has ${botBalance} magic internet money`, message.channel);
-  //   });
-
-  //   matchInput(message, /^good bot gets (\d+)$/i, BOT_USER_ID, async (client, bot, match) => {
-  //     const amount = Number(match[1]);
-  //     rtm.sendMessage(`Set ${mention(bot)} balance to ${amount} magic internet money`, message.channel);
-
-  //     await bot.initBalance(bot.address, amount);
-
-  //     const balance = await bot.getMyBalance();
-  //     rtm.sendMessage(`${mention(bot)} now has ${balance} magic internet money`, message.channel);
-  //   });
-
     matchInput(message, /I opened a pull request/i, BOT_USER_ID, async (client, bot, match) => {
       rtm.sendMessage(`Transfering ${PULL_REQUEST_AWARD} to ${mention(client)}`, message.channel);
       const result = await orbsClient.transfer(bot, client, PULL_REQUEST_AWARD);
@@ -220,19 +216,21 @@ rtm.on("message", async (message) => {
       rtm.sendMessage(`${mention(bot)} now has ${botBalance} magic internet money`, message.channel);
     });
 
-  //   matchInput(message, /[transfer|send] (\d+) to <@(\w+)>/, BOT_USER_ID, async (client, bot, match) => {
-  //     const amount = Number(match[1]);
-  //     const to = match[2];
+    matchInput(message, /[transfer|send] (\d+) to <@(\w+)>/, BOT_USER_ID, async (client, bot, match) => {
+      const amount = Number(match[1]);
+      const to = match[2];
 
-  //     const receiver = await getAccount(to, config);
-  //     rtm.sendMessage(`Transfering ${amount} from ${mention(client)} to ${mention(receiver)}`, message.channel);
+      const receiver = await getAccount(to);
+      rtm.sendMessage(`Transfering ${amount} from ${mention(client)} to ${mention(receiver)}`, message.channel);
 
-  //     await client.transfer(receiver.address, amount);
+      const result = await orbsClient.transfer(client, receiver, amount);
 
-  //     const [ clientBalance, receiverBalance ] = await Promise.all([client.getMyBalance(), receiver.getMyBalance()]);
-  //     rtm.sendMessage(`${mention(client)} now has ${clientBalance} magic internet money`, message.channel);
-  //     rtm.sendMessage(`${mention(receiver)} now has ${receiverBalance} magic internet money`, message.channel);
-  //   });
+      rtm.sendMessage(`Transaction ${base64ToHex(result.TransactionReceipt.Txhash)} committed to block ${result.BlockHeight}`, message.channel);
+
+      const [ clientBalance, receiverBalance ] = await Promise.all([orbsClient.getMyBalance(client), orbsClient.getMyBalance(receiver)]);
+      rtm.sendMessage(`${mention(client)} now has ${clientBalance} magic internet money`, message.channel);
+      rtm.sendMessage(`${mention(receiver)} now has ${receiverBalance} magic internet money`, message.channel);
+    });
   } catch (e) {
     console.log(`Error occurred: ${e}`);
   }
